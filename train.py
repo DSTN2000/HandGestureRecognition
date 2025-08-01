@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torchinfo import summary as summary
 import numpy as np
 from mamba_ssm import Mamba2
 from dataset.dataset import get_dataset, gestures
@@ -10,6 +11,10 @@ from typing import List, Tuple, Optional
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import random
+
+import wandb
+import wandb_workspaces.workspaces as ws
+from utils.logging_callback import MyPyTorchLoggingCallback, create_workspace_sections
 
 from model.model import Mamba2GestureRecognizer
 from utils.collate_function import collate_fn
@@ -34,15 +39,12 @@ class GestureDataset(Dataset):
         # Get landmark sequence - shape: (n_frames, 63)
         lmk_seq = torch.FloatTensor(row['lmk_seq'])
         
-        # Get gesture_id as single target (no CTC processing needed)
         target = torch.LongTensor([row['gesture_id']])
         
         return lmk_seq, target
 
 class GestureTrainer:
-    """
-    Enhanced training class with validation support.
-    """
+
     def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu'):
         self.model = model.to(device)
         self.device = device
@@ -50,7 +52,7 @@ class GestureTrainer:
         
     def train_epoch(self, dataloader, optimizer, scheduler=None):
         """
-        Train the model for one epoch with tqdm progress bar.
+        Train the model for one epoch with ```tqdm``` progress bar.
         """
         self.model.train()
         total_loss = 0
@@ -220,10 +222,11 @@ def main():
     print(f"\033[92mDataset loaded with {len(full_df)} samples\033[0m")
     
     # Split dataset into train and validation sets
+    test_size = 0.2
     print("Splitting dataset into train/validation sets...")
     train_df, val_df = train_test_split(
         full_df, 
-        test_size=0.2, 
+        test_size=test_size, 
         random_state=42, 
         stratify=full_df['gesture_id']
     )
@@ -241,17 +244,18 @@ def main():
     # Create datasets and dataloaders
     train_dataset = GestureDataset(train_df)
     val_dataset = GestureDataset(val_df)
-    
+    batch_size=16
+
     train_dataloader = DataLoader(
         train_dataset, 
-        batch_size=16,
+        batch_size=batch_size,
         shuffle=True, 
         collate_fn=collate_fn
     )
     
     val_dataloader = DataLoader(
         val_dataset, 
-        batch_size=16,
+        batch_size=batch_size,
         shuffle=False,  # No need to shuffle validation data
         collate_fn=collate_fn
     )
@@ -266,13 +270,50 @@ def main():
     # Get gesture names for logging
     gesture_names = gestures
     
-    # Set the name of the model
-    model_name = 'gesture_model'
-
     # Training loop with validation
     print("\nStarting training...")
     num_epochs = 200
-    
+
+    # Initialize wandb logging
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="hgr",
+
+        # track hyperparameters and run metadata with wandb.config
+        config={
+            "compile_config": {'loss': trainer.loss_fn, 'optimizer': optimizer},
+            "epochs": num_epochs,
+            "batch_size": batch_size,
+            "model_summary": str(summary(model, (1,1,63))).split('\n'),
+            "validation_split": test_size,
+            "features": '63 features: raw coordinates',
+        }
+    )
+
+    # Log model to wandb
+    wandb.watch(model, log_freq=10)
+
+    wandb.run.define_metric("*", step_metric="Epoch")
+
+    # Create sections for each gesture class
+    ws_url = f"{'/'.join(wandb.run.url.split('/')[:-2])}?nw=tkvgdf0zdae"
+    workspace = ws.Workspace.from_url(ws_url)
+    class_sections = create_workspace_sections(workspace, gesture_names)
+
+    # Initialize logging callback
+    logging_callback = MyPyTorchLoggingCallback(
+        validation_dataloader=val_dataloader,
+        class_names=gesture_names,
+        model=model,
+        device=trainer.device,
+        workspace=workspace,
+        class_sections=class_sections,
+        log_frequency=1  # Log every epoch
+    )
+
+    # Set the name of the model
+    model_name = wandb.run.name
+
     # Track best validation accuracy
     best_val_accuracy = 0.0
     
@@ -294,6 +335,25 @@ def main():
             'Val_Acc': f'{val_accuracy:.4f}'
         })
         
+        # Log basic metrics to wandb
+        wandb.log({
+            'epoch/epoch': epoch,
+            'epoch/loss': train_loss,
+            'epoch/categorical_accuracy': train_accuracy,
+            'epoch/val_loss': val_loss,
+            'epoch/val_categorical_accuracy': val_accuracy,
+            'epoch/learning_rate': optimizer.param_groups[0]['lr']
+        })
+        
+        # Call the logging callback
+        logging_callback.on_epoch_end(
+            epoch=epoch,
+            train_loss=train_loss,
+            train_accuracy=train_accuracy,
+            val_loss=val_loss,
+            val_accuracy=val_accuracy
+        )
+
         # Print detailed epoch results
         print(f"\nEpoch {epoch+1}/{num_epochs} Results:")
         print(f"  Train - Loss: {train_loss:.4f}, Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.2f}%)")
@@ -313,7 +373,7 @@ def main():
                 'val_loss': val_loss,
                 'train_accuracy': train_accuracy,
                 'val_accuracy': val_accuracy,
-            }, f'./saved_models/best_{model_name}.pth')
+            }, f'./saved_models/best-{model_name}.pth')
         
         # Log sample predictions from validation set
         trainer.log_sample_predictions(sample_predictions, epoch+1, gesture_names)
@@ -332,6 +392,10 @@ def main():
     
     print(f"\nTraining completed!")
     print(f"Best validation accuracy achieved: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
+    # Log best model artifact to wandb
+    wandb.save(f'./saved_models/best_{model_name}.pth')
+    # Finish wandb run
+    wandb.finish()
 
 
 if __name__ == '__main__':

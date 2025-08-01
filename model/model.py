@@ -4,9 +4,6 @@ from mamba_ssm import Mamba2
 from typing import List, Tuple, Optional
 
 class Mamba2GestureRecognizer(nn.Module):
-    """
-    Simplified Mamba2-based gesture recognition model for single classification.
-    """
     
     def __init__(self, 
                  input_dim: int = 63,  # 21 landmarks * 3 coordinates

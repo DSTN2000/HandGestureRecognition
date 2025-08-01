@@ -387,7 +387,7 @@ def main():
     )
 
     # Load trained model
-    model_name = 'best_gesture_model.pth'  # Name only
+    model_name = 'best_gesture_model.pth'  # Name only (with extension)
     model_path = f'saved_models/{model_name}'
     model_results_save_dir = f'./test_results/{model_name[:-4]}'
     try:
