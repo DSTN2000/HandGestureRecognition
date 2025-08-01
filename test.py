@@ -333,7 +333,7 @@ def load_model(model_path, device='cuda' if torch.cuda.is_available() else 'cpu'
     # Create model instance
     model = Mamba2GestureRecognizer(
         input_dim=63,
-        d_model=256,
+        d_model=64,
         num_classes=14,
         num_layers=4,
         dropout=0.1
@@ -341,8 +341,12 @@ def load_model(model_path, device='cuda' if torch.cuda.is_available() else 'cpu'
 
     # Load checkpoint
     print(f"Loading model from: {model_path}")
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except:
+        print("\033[93WARNING: Failed to load the state dict. Loading full model instead...\033[0m")
+        model = torch.load(checkpoint['model'])
 
     # Print checkpoint info
     if 'epoch' in checkpoint:
@@ -387,14 +391,9 @@ def main():
     )
 
     # Load trained model
-    model_name = 'best_gesture_model.pth'  # Name only (with extension)
+    model_name = 'best-sparkling-dream-86.pth'  # Name only (with extension)
     model_path = f'saved_models/{model_name}'
     model_results_save_dir = f'./test_results/{model_name[:-4]}'
-    try:
-        os.mkdir(model_results_save_dir)
-    except OSError:
-        # Do nothing if path already exists
-        pass
     try:
         model = load_model(model_path)
         print("✅ \033[92mModel loaded successfully\033[0m")
@@ -402,6 +401,12 @@ def main():
         print(f"❌ \033[91mError loading model: {e}\033[0m")
         print("Please make sure the model file exists and the path is correct.")
         return
+
+    try:
+        os.mkdir(model_results_save_dir)
+    except OSError:
+        # Do nothing if path already exists
+        pass
 
     # Create evaluator
     evaluator = ModelEvaluator(model)

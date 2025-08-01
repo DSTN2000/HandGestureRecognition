@@ -9,6 +9,9 @@ from dataset.dataset import get_dataset, gestures
 import pandas as pd
 from typing import List, Tuple, Optional
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
+
 from tqdm import tqdm
 import random
 
@@ -18,6 +21,7 @@ from utils.logging_callback import MyPyTorchLoggingCallback, create_workspace_se
 
 from model.model import Mamba2GestureRecognizer
 from utils.collate_function import collate_fn
+from utils.focal_loss import FocalLoss
 
 class GestureDataset(Dataset):
     """
@@ -48,8 +52,9 @@ class GestureTrainer:
     def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu'):
         self.model = model.to(device)
         self.device = device
-        self.loss_fn = nn.CrossEntropyLoss()
-        
+        # self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = FocalLoss()
+
     def train_epoch(self, dataloader, optimizer, scheduler=None):
         """
         Train the model for one epoch with ```tqdm``` progress bar.
@@ -205,7 +210,7 @@ def create_model_and_trainer():
     """
     model = Mamba2GestureRecognizer(
         input_dim=63,          # 21 landmarks * 3 coordinates
-        d_model=256,           # Model dimension
+        d_model=64,            # Model dimension
         num_classes=14,        # All 14 gesture classes
         num_layers=4,          # Number of Mamba2 layers
         dropout=0.1            # Dropout for regularization
@@ -218,7 +223,7 @@ def create_model_and_trainer():
 def main():
     # Load dataset
     print("Loading dataset...")
-    full_df = get_dataset()
+    full_df = get_dataset(threshold=0.5)
     print(f"\033[92mDataset loaded with {len(full_df)} samples\033[0m")
     
     # Split dataset into train and validation sets
@@ -262,6 +267,15 @@ def main():
     
     # Create model and trainer
     model, trainer = create_model_and_trainer()
+
+    class_weights = compute_class_weight(
+    'balanced',
+    classes=np.unique(train_df['gesture_id']),
+    y=train_df['gesture_id']
+    )
+    class_weights = torch.FloatTensor(class_weights)
+
+    trainer.loss_fn = FocalLoss(alpha=class_weights, gamma=2.0) # Pass the weights to the focal loss as the alpha
     
     # Setup optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -284,8 +298,9 @@ def main():
             "compile_config": {'loss': trainer.loss_fn, 'optimizer': optimizer},
             "epochs": num_epochs,
             "batch_size": batch_size,
-            "model_summary": str(summary(model, (1,1,63))).split('\n'),
+            "model_summary": model,
             "validation_split": test_size,
+            "dataset_size": len(train_dataset) + len(val_dataset), 
             "features": '63 features: raw coordinates',
         }
     )
@@ -373,23 +388,12 @@ def main():
                 'val_loss': val_loss,
                 'train_accuracy': train_accuracy,
                 'val_accuracy': val_accuracy,
+                'full_model': model,
             }, f'./saved_models/best-{model_name}.pth')
         
         # Log sample predictions from validation set
         trainer.log_sample_predictions(sample_predictions, epoch+1, gesture_names)
         
-        # # Save checkpoint every 20 epochs
-        # if (epoch + 1) % 20 == 0:
-        #     torch.save({
-        #         'epoch': epoch,
-        #         'model_state_dict': model.state_dict(),
-        #         'optimizer_state_dict': optimizer.state_dict(),
-        #         'train_loss': train_loss,
-        #         'val_loss': val_loss,
-        #         'train_accuracy': train_accuracy,
-        #         'val_accuracy': val_accuracy,
-        #     }, f'gesture_model_epoch_{epoch+1}.pth')
-    
     print(f"\nTraining completed!")
     print(f"Best validation accuracy achieved: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
     # Log best model artifact to wandb

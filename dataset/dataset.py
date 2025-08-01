@@ -1,6 +1,15 @@
 import pandas as pd
+import numpy as np
 
-def get_dataset(path : str = './dataset/dataset.pkl') -> pd.DataFrame:
+# Data filtering function
+def has_sufficient_landmarks(seq, threshold):
+    """Check if sequence has >= threshold proportion of frames with detected landmarks."""
+    # Count frames with any non-zero landmarks
+    detected_frames = np.sum(np.any(seq != 0, axis=1))
+    total_frames = seq.shape[0]
+    return (detected_frames / total_frames) >= threshold
+
+def get_dataset(path : str = './dataset/dataset.pkl', threshold=0) -> pd.DataFrame:
     '''
     Returns the dataset containing ```gesture_id```\'s and the sequences of ```Mediapipe```\'s landmarks.
 
@@ -13,6 +22,8 @@ def get_dataset(path : str = './dataset/dataset.pkl') -> pd.DataFrame:
     dataset = pd.read_pickle(path)
     # Enforce zero-indexing
     dataset['gesture_id'] -= 1
+    # Only include sequences with the percentage of landmarks detected above the threshold
+    dataset = dataset[dataset['lmk_seq'].apply(lambda seq: has_sufficient_landmarks(seq, threshold))].reset_index(drop=True)
     return dataset
 
 gestures = [
